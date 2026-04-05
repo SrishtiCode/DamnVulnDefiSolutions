@@ -47,11 +47,8 @@ contract TrusterLenderPool is ReentrancyGuard {
         // Transfer requested tokens to the borrower
         token.transfer(borrower, amount);
 
-<<<<<<< HEAD
         // ⚠️ CRITICAL VULNERABILITY: arbitrary external call made as the pool itself
-=======
         // CRITICAL VULNERABILITY: arbitrary external call made as the pool itself
->>>>>>> 06135a20b9e65071330fdab277342845d5242b92
         // The pool (msg.sender context) executes whatever `data` is on `target`
         // e.g. attacker sets target=token, data=token.approve(attacker, type(uint256).max)
         target.functionCall(data);
