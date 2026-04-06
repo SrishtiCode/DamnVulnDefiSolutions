@@ -27,8 +27,8 @@ contract Exchange is ReentrancyGuard {
         oracle = TrustfulOracle(_oracle);
     }
 
-    function buyOne() external payable nonReentrant returns (uint256 id) {
-        if (msg.value == 0) {
+    function buyOne() external payable nonReentrant returns (uint256 id) {//If someone is want to buy the nft
+        if (msg.value == 0) { //value should not be zero 
             revert InvalidPayment();
         }
 
@@ -46,7 +46,7 @@ contract Exchange is ReentrancyGuard {
         emit TokenBought(msg.sender, id, price);
     }
 
-    function sellOne(uint256 id) external nonReentrant {
+    function sellOne(uint256 id) external nonReentrant {//If anyone want to sell the nft
         if (msg.sender != token.ownerOf(id)) {
             revert SellerNotOwner(id);
         }

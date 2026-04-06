@@ -235,7 +235,7 @@ contract SelfieAttacker is IERC3156FlashBorrower {
 //   deployer funds SelfiePool with 1,500,000 DVT
 //   ┌─────────────┐     holds 1.5M DVT      ┌──────────────────┐
 //   │ SelfiePool  │ ◄────────────────────── │ SimpleGovernance │
-//   │ 1.5M DVT   │     onlyGovernance gate  │ needs >50% votes │
+//   │ 1.5M DVT    │     onlyGovernance gate │ needs >50% votes │
 //   └─────────────┘                         └──────────────────┘
 
 // ─────────────────────────────────────────────────────────────
