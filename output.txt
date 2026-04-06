@@ -1,0 +1,15 @@
+No files changed, compilation skipped
+
+Ran 1 test for test/shards/Shards.t.sol:ShardsChallenge
+[FAIL: EvmError: Revert] test_shards() (gas: 8859358109)
+Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 7.42s (7.41s CPU time)
+
+Ran 1 test suite in 7.44s (7.42s CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
+
+Failing tests:
+Encountered 1 failing test in test/shards/Shards.t.sol:ShardsChallenge
+[FAIL: EvmError: Revert] test_shards() (gas: 8859358109)
+
+Encountered a total of 1 failing tests, 0 tests succeeded
+
+Tip: Run `forge test --rerun` to retry only the 1 failed test
